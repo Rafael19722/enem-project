@@ -2,11 +2,12 @@ import { Injectable } from '@nestjs/common';
 import { join } from 'path';
 import PDFDocument from 'pdfkit';
 import { Writable } from 'stream';
-import { Question } from '../common/question.interface';
+import { Alternative, Question } from '../common/question.interface';
 import { ImageLoader, LoadedImage } from './image-loader';
 
 const MARGIN = 40;
 const QUESTION_GAP = 20;
+const SEGMENT_GAP = 10;
 
 /**
  * pdfkit's built-in Helvetica is limited to WinAnsi, which silently mangles
@@ -45,6 +46,15 @@ interface Size {
   height: number;
 }
 
+/** A run of statement content: prose, or a figure sitting between prose. */
+type Segment = { kind: 'text'; value: string } | { kind: 'image'; url: string };
+
+/** Matches a markdown image or an <img> tag, capturing the source URL. */
+const IMAGE_PATTERN = /!\[[^\]]*\]\(([^)]+)\)|<img[^>]+src="([^">]+)"[^>]*>/g;
+
+/** A text run carrying no words — punctuation stranded by an image split. */
+const PUNCTUATION_ONLY = /^[\s.,;:!?)\]]+$/;
+
 @Injectable()
 export class PdfService {
   private readonly images = new ImageLoader();
@@ -65,61 +75,8 @@ export class PdfService {
     doc.registerFont(FONT_BOLD, join(FONTS_DIR, 'DejaVuSans-Bold.ttf'));
     doc.font(FONT_REGULAR);
 
-    const pageHeight = doc.page.height;
-    const columnWidth = (doc.page.width - MARGIN * 3) / 2;
-    const rightColumnX = MARGIN + columnWidth + MARGIN;
-
-    let leftY = MARGIN;
-    let rightY = MARGIN;
-
-    for (const question of questions) {
-      const height = this.measureQuestion(
-        doc,
-        question,
-        columnWidth,
-        pageHeight,
-      );
-
-      const leftSpace = pageHeight - MARGIN - leftY;
-      const rightSpace = pageHeight - MARGIN - rightY;
-      let useLeftColumn = leftSpace >= rightSpace;
-
-      let x = useLeftColumn ? MARGIN : rightColumnX;
-      let currentY = useLeftColumn ? leftY : rightY;
-
-      // Doesn't fit in the roomier column? Try the other one, then a new page.
-      if (currentY + height > pageHeight - MARGIN) {
-        useLeftColumn = !useLeftColumn;
-        x = useLeftColumn ? MARGIN : rightColumnX;
-        currentY = useLeftColumn ? leftY : rightY;
-
-        if (currentY + height > pageHeight - MARGIN) {
-          doc.addPage();
-          leftY = MARGIN;
-          rightY = MARGIN;
-          useLeftColumn = true;
-          x = MARGIN;
-          currentY = MARGIN;
-        }
-      }
-
-      const finalY = this.renderQuestion(
-        doc,
-        question,
-        x,
-        currentY,
-        columnWidth,
-        pageHeight,
-      );
-
-      if (useLeftColumn) {
-        leftY = finalY + QUESTION_GAP;
-      } else {
-        rightY = finalY + QUESTION_GAP;
-      }
-    }
-
-    this.renderAnswerKey(doc, questions);
+    const placed = this.layout(doc, questions);
+    this.renderAnswerKey(doc, placed);
 
     doc.end();
 
@@ -129,32 +86,174 @@ export class PdfService {
     });
   }
 
-  // --- image selection -----------------------------------------------------
+  // --- layout --------------------------------------------------------------
 
   /**
-   * Context figures come from `files`, which the API populates with every image
-   * in the statement. The old regex over the markdown returned only the first
-   * match, silently dropping the rest (2023 question 152 ships four).
+   * Places questions into two columns, returning them in the order they landed
+   * on the page so the answer key can follow the same sequence.
+   *
+   * Strict document order wastes a lot of paper: one question taller than the
+   * space left forces a new page and abandons whatever was still free, which
+   * routinely left a full column blank. Instead each column takes the first
+   * question still pending that actually fits it. Scanning pending in order
+   * keeps the run of a subject together, since a later subject is only reached
+   * once nothing from the current one fits.
    */
-  private contextImages(question: Question): string[] {
-    if (question.files?.length) return question.files;
-    const inline = this.extractImageUrl(question.context);
-    return inline ? [inline] : [];
+  private layout(doc: PDFKit.PDFDocument, questions: Question[]): Question[] {
+    const pageHeight = doc.page.height;
+    const columnWidth = (doc.page.width - MARGIN * 3) / 2;
+    const rightColumnX = MARGIN + columnWidth + MARGIN;
+    const columnHeight = pageHeight - MARGIN * 2;
+
+    const heights = new Map<Question, number>(
+      questions.map((q) => [
+        q,
+        this.measureQuestion(doc, q, columnWidth, pageHeight),
+      ]),
+    );
+
+    const pending = [...questions];
+    const placed: Question[] = [];
+    let leftY = MARGIN;
+    let rightY = MARGIN;
+
+    const place = (question: Question, x: number, y: number): number => {
+      const end = this.renderQuestion(
+        doc,
+        question,
+        x,
+        y,
+        columnWidth,
+        pageHeight,
+      );
+      pending.splice(pending.indexOf(question), 1);
+      placed.push(question);
+      return end + QUESTION_GAP;
+    };
+
+    while (pending.length > 0) {
+      // Try the roomier column first so the two stay roughly level.
+      const columns =
+        pageHeight - MARGIN - leftY >= pageHeight - MARGIN - rightY
+          ? ([
+              [MARGIN, leftY, true],
+              [rightColumnX, rightY, false],
+            ] as const)
+          : ([
+              [rightColumnX, rightY, false],
+              [MARGIN, leftY, true],
+            ] as const);
+
+      let progressed = false;
+
+      for (const [x, y, isLeft] of columns) {
+        const available = pageHeight - MARGIN - y;
+        const next = pending.find((q) => heights.get(q)! <= available);
+        if (!next) continue;
+
+        const end = place(next, x, y);
+        if (isLeft) leftY = end;
+        else rightY = end;
+        progressed = true;
+        break;
+      }
+
+      if (progressed) continue;
+
+      doc.addPage();
+      leftY = MARGIN;
+      rightY = MARGIN;
+
+      // A question taller than an empty column can never fit, so a fresh page
+      // would not help; render it anyway and let it run past the bottom.
+      const oversized = pending[0];
+      if (heights.get(oversized)! > columnHeight) {
+        leftY = place(oversized, MARGIN, MARGIN);
+      }
+    }
+
+    return placed;
   }
 
-  private alternativeImage(
-    text: string | null,
-    file: string | null,
-  ): string | null {
-    return file ?? this.extractImageUrl(text);
+  // --- content -------------------------------------------------------------
+
+  /**
+   * Splits a statement into prose and figures in reading order.
+   *
+   * The API embeds figures mid-sentence, and stripping them left the prose
+   * dangling ("Considere 0,3 como aproximação para ." in 2023 question 152)
+   * with every figure dumped below the text, out of order. Punctuation left
+   * stranded by a split is folded back onto the preceding sentence.
+   */
+  private parseSegments(raw: string | null | undefined): Segment[] {
+    if (!raw) return [];
+
+    const segments: Segment[] = [];
+    let cursor = 0;
+
+    const pushText = (value: string) => {
+      const text = this.cleanText(value);
+      if (!text) return;
+
+      // Look past the image that split it off to reach the sentence it ends.
+      const lastText = segments.findLast((s) => s.kind === 'text');
+      if (PUNCTUATION_ONLY.test(text) && lastText?.kind === 'text') {
+        lastText.value += text;
+        return;
+      }
+      segments.push({ kind: 'text', value: text });
+    };
+
+    IMAGE_PATTERN.lastIndex = 0;
+    for (
+      let match = IMAGE_PATTERN.exec(raw);
+      match !== null;
+      match = IMAGE_PATTERN.exec(raw)
+    ) {
+      pushText(raw.slice(cursor, match.index));
+      const url = (match[1] ?? match[2])?.trim();
+      if (url) segments.push({ kind: 'image', url });
+      cursor = match.index + match[0].length;
+    }
+    pushText(raw.slice(cursor));
+
+    return segments;
+  }
+
+  /**
+   * The statement's segments, plus any image from `files` the prose never
+   * referenced. `files` lists every figure of the question, so it backfills
+   * whatever the inline markers missed.
+   */
+  private contextSegments(question: Question): Segment[] {
+    const segments = this.parseSegments(question.context);
+    const seen = new Set(
+      segments.flatMap((s) => (s.kind === 'image' ? [s.url] : [])),
+    );
+
+    for (const file of question.files ?? []) {
+      if (!seen.has(file)) segments.push({ kind: 'image', url: file });
+    }
+
+    return segments;
+  }
+
+  private alternativeImage(alt: Alternative): string | null {
+    if (alt.file) return alt.file;
+    const [segment] = this.parseSegments(alt.text).filter(
+      (s) => s.kind === 'image',
+    );
+    return segment?.kind === 'image' ? segment.url : null;
   }
 
   private collectImageUrls(questions: Question[]): string[] {
     const urls: string[] = [];
     for (const question of questions) {
-      urls.push(...this.contextImages(question));
+      for (const segment of this.contextSegments(question)) {
+        if (segment.kind === 'image') urls.push(segment.url);
+      }
       for (const alt of question.alternatives) {
-        const url = this.alternativeImage(alt.text, alt.file);
+        const url = this.alternativeImage(alt);
         if (url) urls.push(url);
       }
     }
@@ -207,25 +306,17 @@ export class PdfService {
 
     doc.fontSize(10).font(FONT_REGULAR);
 
-    const context = this.cleanText(question.context);
-    if (context) {
+    for (const segment of this.contextSegments(question)) {
       height +=
-        doc.heightOfString(context, { width: columnWidth, align: 'justify' }) +
-        10;
-    }
-
-    for (const url of this.contextImages(question)) {
-      const image = this.images.get(url);
-      if (!image) continue;
-      height +=
-        this.fitContextImage(image, columnWidth, pageHeight).height + 10;
+        this.measureSegment(doc, segment, columnWidth, pageHeight) +
+        SEGMENT_GAP;
     }
 
     const intro = this.cleanText(question.alternativesIntroduction);
     if (intro) {
       height +=
         doc.heightOfString(intro, { width: columnWidth, align: 'justify' }) +
-        10;
+        SEGMENT_GAP;
     }
 
     for (const alt of question.alternatives) {
@@ -235,12 +326,31 @@ export class PdfService {
     return height + 15;
   }
 
+  private measureSegment(
+    doc: PDFKit.PDFDocument,
+    segment: Segment,
+    columnWidth: number,
+    pageHeight: number,
+  ): number {
+    if (segment.kind === 'text') {
+      return doc.heightOfString(segment.value, {
+        width: columnWidth,
+        align: 'justify',
+      });
+    }
+
+    const image = this.images.get(segment.url);
+    return image
+      ? this.fitContextImage(image, columnWidth, pageHeight).height
+      : 0;
+  }
+
   private measureAlternative(
     doc: PDFKit.PDFDocument,
-    alt: Question['alternatives'][number],
+    alt: Alternative,
     columnWidth: number,
   ): number {
-    const url = this.alternativeImage(alt.text, alt.file);
+    const url = this.alternativeImage(alt);
     const image = url ? this.images.get(url) : null;
 
     if (image) {
@@ -283,27 +393,16 @@ export class PdfService {
 
     doc.fontSize(10).font(FONT_REGULAR);
 
-    const context = this.cleanText(question.context);
-    if (context) {
-      doc.text(context, x, currentY, { width: columnWidth, align: 'justify' });
-      currentY = doc.y + 10;
-    }
-
-    for (const url of this.contextImages(question)) {
-      const image = this.images.get(url);
-      if (!image) continue;
-      const size = this.fitContextImage(image, columnWidth, pageHeight);
-      doc.image(image.buffer, x, currentY, {
-        width: size.width,
-        height: size.height,
-      });
-      currentY += size.height + 10;
+    for (const segment of this.contextSegments(question)) {
+      currentY =
+        this.renderSegment(doc, segment, x, currentY, columnWidth, pageHeight) +
+        SEGMENT_GAP;
     }
 
     const intro = this.cleanText(question.alternativesIntroduction);
     if (intro) {
       doc.text(intro, x, currentY, { width: columnWidth, align: 'justify' });
-      currentY = doc.y + 10;
+      currentY = doc.y + SEGMENT_GAP;
     }
 
     for (const alt of question.alternatives) {
@@ -313,14 +412,35 @@ export class PdfService {
     return currentY;
   }
 
+  private renderSegment(
+    doc: PDFKit.PDFDocument,
+    segment: Segment,
+    x: number,
+    y: number,
+    columnWidth: number,
+    pageHeight: number,
+  ): number {
+    if (segment.kind === 'text') {
+      doc.text(segment.value, x, y, { width: columnWidth, align: 'justify' });
+      return doc.y;
+    }
+
+    const image = this.images.get(segment.url);
+    if (!image) return y;
+
+    const size = this.fitContextImage(image, columnWidth, pageHeight);
+    doc.image(image.buffer, x, y, { width: size.width, height: size.height });
+    return y + size.height;
+  }
+
   private renderAlternative(
     doc: PDFKit.PDFDocument,
-    alt: Question['alternatives'][number],
+    alt: Alternative,
     x: number,
     y: number,
     columnWidth: number,
   ): number {
-    const url = this.alternativeImage(alt.text, alt.file);
+    const url = this.alternativeImage(alt);
     const image = url ? this.images.get(url) : null;
 
     if (image) {
@@ -347,12 +467,20 @@ export class PdfService {
     return doc.y + 5;
   }
 
-  /** Answer key on its own page, from the `correctAlternative` the API ships. */
+  /**
+   * Answer key on its own page, from the `correctAlternative` the API ships.
+   *
+   * Sorted by year and number rather than laid out in page order: this is a
+   * lookup table, and someone marking their simulado is searching it for a
+   * question number, not reading it top to bottom.
+   */
   private renderAnswerKey(
     doc: PDFKit.PDFDocument,
     questions: Question[],
   ): void {
-    const answered = questions.filter((q) => q.correctAlternative);
+    const answered = questions
+      .filter((q) => q.correctAlternative)
+      .sort((a, b) => a.year - b.year || a.index - b.index);
     if (answered.length === 0) return;
 
     doc.addPage();
@@ -393,8 +521,6 @@ export class PdfService {
     if (!text) return '';
     return (
       text
-        .replace(/!\[.*?\]\(.*?\)/g, '')
-        .replace(/<img[^>]*>/g, '')
         .replace(/<[^>]*>/g, '')
         .replace(/\*\*(.*?)\*\*/g, '$1')
         .replace(/\*(.*?)\*/g, '$1')
@@ -404,22 +530,5 @@ export class PdfService {
         .replace(/\\n/g, '\n')
         .trim()
     );
-  }
-
-  /** Finds the first image URL inside markdown/HTML/plain text. */
-  private extractImageUrl(text: string | null | undefined): string | null {
-    if (!text) return null;
-    const patterns = [
-      /!\[.*?\]\((.*?)\)/,
-      /<img[^>]+src="([^">]+)"/,
-      /(https?:\/\/[^\s]+\.(?:jpg|jpeg|png|gif|bmp|webp|svg))/i,
-    ];
-    for (const pattern of patterns) {
-      const match = text.match(pattern);
-      if (match?.[1]) {
-        return match[1].trim();
-      }
-    }
-    return null;
   }
 }
