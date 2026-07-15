@@ -1,11 +1,11 @@
 import { useMutation, useQuery } from '@tanstack/react-query';
 import {
+  drawQuestions,
   generatePdf,
   getDisciplines,
-  getRandomQuestions,
   getYears,
 } from '../lib/api';
-import type { Question } from '../lib/types';
+import type { Question, Selection } from '../lib/types';
 
 export function useYears() {
   return useQuery({
@@ -26,19 +26,19 @@ export function useDisciplines(year: number | null) {
 
 export function useDrawQuestions() {
   return useMutation({
-    mutationFn: (vars: { year: number; discipline: string; amount: number }) =>
-      getRandomQuestions(vars.year, vars.discipline, vars.amount),
+    mutationFn: (selections: Selection[]) => drawQuestions(selections),
   });
 }
 
 export function useGeneratePdf() {
   return useMutation({
-    mutationFn: (questions: Question[]) => generatePdf(questions),
+    mutationFn: (questions: Question[]) =>
+      generatePdf(questions.map((q) => ({ year: q.year, index: q.index }))),
     onSuccess: (blob) => {
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
-      link.download = 'questoes-enem.pdf';
+      link.download = 'simulado-enem.pdf';
       link.click();
       URL.revokeObjectURL(url);
     },

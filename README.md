@@ -1,7 +1,8 @@
 # ENEM · Gerador de Simulados
 
-Monte simulados do ENEM em PDF: escolha ano e disciplina, defina a quantidade e
-receba um PDF com questões **sorteadas aleatoriamente**. As questões vêm da API
+Monte simulados do ENEM em PDF: combine quantas matérias e anos quiser, defina
+quantas questões quer de cada um e receba um PDF de duas colunas com questões
+**sorteadas aleatoriamente** e **gabarito** no final. As questões vêm da API
 pública [api.enem.dev](https://api.enem.dev).
 
 Reescrita modernizada de um projeto legado (`enem_consume`).
@@ -60,12 +61,49 @@ pnpm run dev
 
 ## Endpoints do backend
 
-| Método | Rota                                          | Descrição                              |
-| ------ | --------------------------------------------- | -------------------------------------- |
-| GET    | `/exams/years`                                | Anos disponíveis (mais recente primeiro) |
-| GET    | `/exams/:year/disciplines`                    | Disciplinas + idiomas do ano           |
-| GET    | `/exams/:year/questions?discipline=&amount=`  | Sorteia `amount` questões da disciplina |
-| POST   | `/pdf/questions`                              | Gera o PDF (body: `{ questions: [...] }`) |
+| Método | Rota                       | Descrição                                  |
+| ------ | -------------------------- | ------------------------------------------ |
+| GET    | `/exams/years`             | Anos disponíveis (mais recente primeiro)   |
+| GET    | `/exams/:year/disciplines` | Disciplinas + idiomas do ano               |
+| POST   | `/exams/draw`              | Sorteia as questões de uma ou mais seleções |
+| POST   | `/pdf/questions`           | Gera o PDF das questões sorteadas          |
+
+```jsonc
+// POST /exams/draw  →  Question[]  (sem as respostas)
+{
+  "selections": [
+    { "year": 2023, "discipline": "matematica", "amount": 5 },
+    { "year": 2016, "discipline": "linguagens", "amount": 5 }
+  ]
+}
+
+// POST /pdf/questions  →  application/pdf
+// As questões vão por referência: o servidor as relê do próprio cache, então o
+// gabarito nunca precisa passar pelo navegador.
+{
+  "refs": [
+    { "year": 2023, "index": 147 },
+    { "year": 2016, "index": 100 }
+  ]
+}
+```
+
+## Detalhes que valem saber
+
+**O layout do ENEM muda conforme o ano.** A prova sempre tem quatro blocos de 45
+questões, mas a ordem das matérias não é fixa: 2017 trocou Linguagens e Ciências
+Humanas de lugar, e 2009 ordena as ciências de outro jeito. Por isso o bloco de
+cada disciplina é deduzido do manifesto que a própria API devolve em
+`/exams/{year}`, e por maioria — os rótulos de disciplina que ela dá questão a
+questão contêm erros. Detalhes em `backend/src/exams/discipline-blocks.ts`.
+
+**As fontes são versionadas junto** (`backend/src/pdf/fonts/`). O Helvetica
+embutido no pdfkit só cobre Latin-1 e corrompe `π`, `−`, `≠`, `∈` e `µ`, que
+aparecem nas provas. O `nest-cli.json` copia os `.ttf` para o `dist` no build.
+
+**As imagens da API não têm escala padronizada** (variam de 35px a 1248px de
+largura). Figuras e fórmulas de alternativa são normalizadas por regras
+diferentes — o porquê está comentado em `backend/src/pdf/pdf.service.ts`.
 
 ## Deploy
 

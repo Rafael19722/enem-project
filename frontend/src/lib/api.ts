@@ -1,5 +1,5 @@
 import axios from 'axios';
-import type { Discipline, Question } from './types';
+import type { Discipline, Question, QuestionRef, Selection } from './types';
 
 const api = axios.create({
   baseURL: import.meta.env.VITE_API_URL ?? 'http://localhost:5000',
@@ -10,25 +10,18 @@ export function getYears(): Promise<number[]> {
 }
 
 export function getDisciplines(year: number): Promise<Discipline[]> {
+  return api.get<Discipline[]>(`/exams/${year}/disciplines`).then((r) => r.data);
+}
+
+export function drawQuestions(selections: Selection[]): Promise<Question[]> {
   return api
-    .get<Discipline[]>(`/exams/${year}/disciplines`)
+    .post<Question[]>('/exams/draw', { selections })
     .then((r) => r.data);
 }
 
-export function getRandomQuestions(
-  year: number,
-  discipline: string,
-  amount: number,
-): Promise<Question[]> {
+/** The server rebuilds the questions from these refs, answer key included. */
+export function generatePdf(refs: QuestionRef[]): Promise<Blob> {
   return api
-    .get<Question[]>(`/exams/${year}/questions`, {
-      params: { discipline, amount },
-    })
-    .then((r) => r.data);
-}
-
-export function generatePdf(questions: Question[]): Promise<Blob> {
-  return api
-    .post('/pdf/questions', { questions }, { responseType: 'blob' })
+    .post('/pdf/questions', { refs }, { responseType: 'blob' })
     .then((r) => r.data);
 }
