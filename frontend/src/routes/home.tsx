@@ -1,4 +1,7 @@
 import { useState } from 'react';
+import { ModePicker } from '@/components/mode-picker';
+import { QuestionCard } from '@/components/question-card';
+import { ResultSummary } from '@/components/result-summary';
 import {
   SelectionRow,
   type SelectionRowValue,
@@ -6,31 +9,33 @@ import {
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Label } from '@/components/ui/label';
-import { useDrawQuestions, useGeneratePdf, useYears } from '@/hooks/useExams';
-import type { Question, Selection } from '@/lib/types';
-
-function snippet(text: string | null, max = 160): string {
-  if (!text) return '';
-  const clean = text
-    .replace(/!\[.*?\]\(.*?\)/g, '')
-    .replace(/<[^>]*>/g, '')
-    .replace(/[*#>_]/g, '')
-    .replace(/\s+/g, ' ')
-    .trim();
-  return clean.length > max ? `${clean.slice(0, max)}…` : clean;
-}
+import {
+  useCheckAnswers,
+  useDrawQuestions,
+  useGeneratePdf,
+  useYears,
+} from '@/hooks/useExams';
+import { useSession } from '@/hooks/useSession';
+import type { AnswerResult, Mode, Selection } from '@/lib/types';
+import { questionKey } from '@/lib/types';
 
 function newRow(year: number | null = null): SelectionRowValue {
   return { id: crypto.randomUUID(), year, discipline: '', amount: 5 };
 }
 
+function indexResults(results: AnswerResult[]): Record<string, AnswerResult> {
+  return Object.fromEntries(results.map((r) => [questionKey(r), r]));
+}
+
 export function Home() {
   const [rows, setRows] = useState<SelectionRowValue[]>([newRow()]);
-  const [questions, setQuestions] = useState<Question[] | null>(null);
+  const [mode, setMode] = useState<Mode>('treino');
 
   const years = useYears();
   const draw = useDrawQuestions();
+  const check = useCheckAnswers();
   const pdf = useGeneratePdf();
+  const { session, setSession, update } = useSession();
 
   const selections: Selection[] = rows
     .filter((r) => r.year !== null && r.discipline !== '')
@@ -41,26 +46,149 @@ export function Home() {
     }));
 
   const total = selections.reduce((sum, s) => sum + s.amount, 0);
-  const canDraw = selections.length > 0 && !draw.isPending;
-
-  function updateRow(next: SelectionRowValue) {
-    setRows((prev) => prev.map((r) => (r.id === next.id ? next : r)));
-    setQuestions(null);
-  }
-
-  function addRow() {
-    // Reuse the last year picked — most people build a simulado from one exam.
-    setRows((prev) => [...prev, newRow(prev.at(-1)?.year ?? null)]);
-  }
-
-  function removeRow(id: string) {
-    setRows((prev) => prev.filter((r) => r.id !== id));
-    setQuestions(null);
-  }
 
   function handleDraw() {
     if (selections.length === 0) return;
-    draw.mutate(selections, { onSuccess: setQuestions });
+    draw.mutate(selections, {
+      onSuccess: (questions) =>
+        setSession({
+          mode,
+          phase: 'respondendo',
+          questions,
+          answers: {},
+          results: {},
+        }),
+    });
+  }
+
+  /** In treino the answer is graded the moment it is given; in prova it is
+   *  only recorded, and everything is graded on finish. */
+  function handleSelect(key: string, letter: string) {
+    if (!session) return;
+
+    update((current) => ({ answers: { ...current.answers, [key]: letter } }));
+
+    if (session.mode !== 'treino') return;
+
+    const [year, index] = key.split('-').map(Number);
+    check.mutate([{ year, index, letter }], {
+      onSuccess: (results) =>
+        update((current) => ({
+          results: { ...current.results, ...indexResults(results) },
+        })),
+    });
+  }
+
+  function handleFinish() {
+    if (!session) return;
+
+    const answers = session.questions.map((q) => ({
+      year: q.year,
+      index: q.index,
+      letter: session.answers[questionKey(q)] ?? null,
+    }));
+
+    check.mutate(answers, {
+      onSuccess: (results) =>
+        update({ phase: 'resultado', results: indexResults(results) }),
+    });
+  }
+
+  function handleRestart() {
+    const answered = Object.keys(session?.answers ?? {}).length;
+    const inProgress = session?.phase === 'respondendo' && answered > 0;
+
+    // Losing answered questions to a stray click is exactly what the saved
+    // session exists to prevent.
+    if (
+      inProgress &&
+      !confirm(
+        `Você tem ${answered} ${answered === 1 ? 'questão respondida' : 'questões respondidas'}. Começar um novo simulado descarta esse progresso.`,
+      )
+    ) {
+      return;
+    }
+    setSession(null);
+  }
+
+  if (session) {
+    const answeredCount = Object.keys(session.answers).length;
+    const done = session.phase === 'resultado';
+
+    return (
+      <div>
+        <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h1 className="text-2xl font-bold tracking-tight">
+              {done ? 'Resultado' : 'Seu simulado'}
+            </h1>
+            <p className="text-sm text-muted-foreground">
+              {session.questions.length}{' '}
+              {session.questions.length === 1 ? 'questão' : 'questões'} ·{' '}
+              {session.mode === 'treino' ? 'treino' : 'prova'}
+              {!done && ` · ${answeredCount} respondida${answeredCount === 1 ? '' : 's'}`}
+            </p>
+          </div>
+
+          <div className="flex gap-2">
+            <Button
+              variant="outline"
+              onClick={() => pdf.mutate(session.questions)}
+              disabled={pdf.isPending}
+            >
+              {pdf.isPending ? 'Gerando…' : 'Baixar PDF'}
+            </Button>
+            <Button variant="ghost" onClick={handleRestart}>
+              Novo simulado
+            </Button>
+          </div>
+        </div>
+
+        {done && (
+          <div className="mb-8">
+            <ResultSummary
+              questions={session.questions}
+              results={session.results}
+            />
+          </div>
+        )}
+
+        {check.isError && (
+          <p className="mb-4 rounded-md border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+            Não foi possível corrigir agora. Suas respostas estão salvas — tente
+            de novo.
+          </p>
+        )}
+
+        <div className="flex flex-col gap-5">
+          {session.questions.map((question, i) => {
+            const key = questionKey(question);
+            return (
+              <QuestionCard
+                key={key}
+                question={question}
+                position={i + 1}
+                selected={session.answers[key] ?? null}
+                result={session.results[key]}
+                onSelect={(letter) => handleSelect(key, letter)}
+              />
+            );
+          })}
+        </div>
+
+        {!done && (
+          <div className="mt-8 flex justify-center">
+            <Button
+              size="lg"
+              onClick={handleFinish}
+              disabled={check.isPending || answeredCount === 0}
+            >
+              {check.isPending ? 'Corrigindo…' : 'Finalizar e ver resultado'}
+            </Button>
+          </div>
+        )}
+      </div>
+    );
   }
 
   return (
@@ -70,7 +198,7 @@ export function Home() {
       </h1>
       <p className="mt-2 mb-8 leading-relaxed text-muted-foreground">
         Escolha as matérias e os anos, defina quantas questões quer de cada uma e
-        gere um PDF com questões sorteadas aleatoriamente e gabarito no final.
+        responda aqui mesmo — ou baixe em PDF pra imprimir. Sem cadastro.
       </p>
 
       <Card>
@@ -89,27 +217,44 @@ export function Home() {
               years={years.data ?? []}
               yearsDisabled={years.isLoading || years.isError}
               canRemove={rows.length > 1}
-              onChange={updateRow}
-              onRemove={() => removeRow(row.id)}
+              onChange={(next) =>
+                setRows((prev) =>
+                  prev.map((r) => (r.id === next.id ? next : r)),
+                )
+              }
+              onRemove={() =>
+                setRows((prev) => prev.filter((r) => r.id !== row.id))
+              }
             />
           ))}
 
           <div className="flex flex-wrap items-center justify-between gap-3 border-t pt-4">
-            <Button variant="outline" onClick={addRow}>
+            <Button
+              variant="outline"
+              onClick={() =>
+                setRows((prev) => [...prev, newRow(prev.at(-1)?.year ?? null)])
+              }
+            >
               + Adicionar matéria
             </Button>
-
-            <div className="flex items-center gap-4">
-              <span className="text-sm text-muted-foreground">
-                {total > 0
-                  ? `${total} ${total === 1 ? 'questão' : 'questões'}`
-                  : 'Nenhuma matéria selecionada'}
-              </span>
-              <Button onClick={handleDraw} disabled={!canDraw}>
-                {draw.isPending ? 'Sorteando…' : 'Sortear simulado'}
-              </Button>
-            </div>
+            <span className="text-sm text-muted-foreground">
+              {total > 0
+                ? `${total} ${total === 1 ? 'questão' : 'questões'}`
+                : 'Nenhuma matéria selecionada'}
+            </span>
           </div>
+
+          <div className="border-t pt-4">
+            <ModePicker value={mode} onChange={setMode} />
+          </div>
+
+          <Button
+            size="lg"
+            onClick={handleDraw}
+            disabled={selections.length === 0 || draw.isPending}
+          >
+            {draw.isPending ? 'Sorteando…' : 'Começar simulado'}
+          </Button>
         </CardContent>
       </Card>
 
@@ -125,59 +270,6 @@ export function Home() {
         <p className="mt-4 rounded-md border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">
           Não foi possível sortear as questões. Tente novamente.
         </p>
-      )}
-
-      {questions && (
-        <section className="mt-10">
-          <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-            <h2 className="text-xl font-semibold">
-              {questions.length}{' '}
-              {questions.length === 1 ? 'questão sorteada' : 'questões sorteadas'}
-            </h2>
-            <div className="flex gap-2">
-              <Button
-                variant="outline"
-                onClick={handleDraw}
-                disabled={draw.isPending}
-              >
-                Sortear de novo
-              </Button>
-              <Button
-                onClick={() => pdf.mutate(questions)}
-                disabled={pdf.isPending}
-              >
-                {pdf.isPending ? 'Gerando PDF…' : 'Baixar PDF'}
-              </Button>
-            </div>
-          </div>
-
-          {pdf.isError && (
-            <p className="mb-4 rounded-md border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">
-              Falha ao gerar o PDF. Tente novamente.
-            </p>
-          )}
-
-          <ol className="flex flex-col gap-3">
-            {questions.map((q) => (
-              <li
-                key={`${q.year}-${q.index}`}
-                className="flex items-start gap-3 rounded-lg border bg-card p-4"
-              >
-                <span className="shrink-0 pt-0.5 text-sm font-bold text-primary">
-                  #{q.index}
-                </span>
-                <span className="shrink-0 pt-0.5 text-xs text-muted-foreground">
-                  {q.year}
-                </span>
-                <p className="text-sm leading-relaxed text-muted-foreground">
-                  {snippet(q.context) ||
-                    snippet(q.alternativesIntroduction ?? null) ||
-                    q.title}
-                </p>
-              </li>
-            ))}
-          </ol>
-        </section>
       )}
     </div>
   );

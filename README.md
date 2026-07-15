@@ -1,9 +1,10 @@
 # ENEM · Gerador de Simulados
 
-Monte simulados do ENEM em PDF: combine quantas matérias e anos quiser, defina
-quantas questões quer de cada um e receba um PDF de duas colunas com questões
-**sorteadas aleatoriamente** e **gabarito** no final. As questões vêm da API
-pública [api.enem.dev](https://api.enem.dev).
+Monte simulados do ENEM combinando quantas matérias e anos quiser: **responda
+online** (modo treino, com correção na hora, ou modo prova, corrigindo no fim)
+ou **baixe em PDF** de duas colunas com gabarito. Questões sorteadas
+aleatoriamente, sem cadastro. As questões vêm da API pública
+[api.enem.dev](https://api.enem.dev).
 
 Reescrita modernizada de um projeto legado (`enem_consume`).
 
@@ -66,16 +67,21 @@ pnpm run dev
 | GET    | `/exams/years`             | Anos disponíveis (mais recente primeiro)   |
 | GET    | `/exams/:year/disciplines` | Disciplinas + idiomas do ano               |
 | POST   | `/exams/draw`              | Sorteia as questões de uma ou mais seleções |
+| POST   | `/exams/check`             | Corrige respostas (o gabarito fica no servidor) |
 | POST   | `/pdf/questions`           | Gera o PDF das questões sorteadas          |
 
 ```jsonc
-// POST /exams/draw  →  Question[]  (sem as respostas)
+// POST /exams/draw  →  ExamQuestion[]  (sem as respostas)
 {
   "selections": [
     { "year": 2023, "discipline": "matematica", "amount": 5 },
     { "year": 2016, "discipline": "linguagens", "amount": 5 }
   ]
 }
+
+// POST /exams/check  →  [{ year, index, correct, correctAlternative }]
+// `letter: null` = em branco, conta como erro.
+{ "answers": [{ "year": 2023, "index": 147, "letter": "B" }] }
 
 // POST /pdf/questions  →  application/pdf
 // As questões vão por referência: o servidor as relê do próprio cache, então o
@@ -103,7 +109,17 @@ aparecem nas provas. O `nest-cli.json` copia os `.ttf` para o `dist` no build.
 
 **As imagens da API não têm escala padronizada** (variam de 35px a 1248px de
 largura). Figuras e fórmulas de alternativa são normalizadas por regras
-diferentes — o porquê está comentado em `backend/src/pdf/pdf.service.ts`.
+diferentes — o porquê está comentado em `backend/src/pdf/pdf.service.ts`. E a
+maioria é PNG com transparência e traço escuro: na web elas vão sobre uma placa
+branca, senão somem no modo noturno.
+
+**O conteúdo é parseado uma vez só, no servidor**
+(`backend/src/common/question-content.ts`). O PDF e a web consomem os mesmos
+segmentos de texto e figura, então as peculiaridades da API — figura no meio da
+frase, `_N_` de itálico, homóglifos do OCR — são tratadas num lugar só.
+
+**O design do simulado online** está em `specs/simulado-online.md`, incluindo o
+que ele deliberadamente não promete (nota TRI, proteção contra trapaça).
 
 ## Deploy
 
