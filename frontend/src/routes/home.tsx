@@ -89,8 +89,12 @@ export function Home() {
     }));
 
     check.mutate(answers, {
-      onSuccess: (results) =>
-        update({ phase: 'resultado', results: indexResults(results) }),
+      onSuccess: (results) => {
+        update({ phase: 'resultado', results: indexResults(results) });
+        // Finishing renders the score at the top of the page, and the click
+        // that triggered it happened at the very bottom.
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+      },
     });
   }
 

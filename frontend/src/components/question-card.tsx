@@ -21,9 +21,11 @@ export function QuestionCard({
 
   return (
     <article className="rounded-lg border bg-card p-5">
-      <header className="mb-3 flex items-baseline gap-3">
+      <header className="mb-4 flex items-baseline gap-3 border-b pb-3">
         <span className="text-sm font-bold text-primary">{position}</span>
-        <h3 className="text-sm font-semibold">{question.title}</h3>
+        <h3 className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
+          {question.title}
+        </h3>
         {revealed && (
           <span
             className={cn(
@@ -36,13 +38,17 @@ export function QuestionCard({
         )}
       </header>
 
+      {/* The statement is something you actually read, so it gets reading type:
+          bigger than the UI around it, loose leading and a capped measure. */}
       <QuestionContent
+        prose
         segments={question.context}
-        className="text-sm leading-relaxed"
+        className="text-[15px] leading-7 text-foreground/90"
       />
       <QuestionContent
+        prose
         segments={question.alternativesIntroduction}
-        className="mt-3 text-sm leading-relaxed font-medium"
+        className="mt-4 text-[15px] leading-7 font-medium"
       />
 
       <ul className="mt-4 flex flex-col gap-2">
