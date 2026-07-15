@@ -9,7 +9,20 @@ import { ConfigService } from '@nestjs/config';
 import { AxiosError } from 'axios';
 import { firstValueFrom } from 'rxjs';
 import { Discipline, Question } from '../common/question.interface';
-import { DISCIPLINE_RANGES, isKnownDiscipline } from './discipline-ranges';
+import {
+  DisciplineBlock,
+  deriveDisciplineBlocks,
+  isKnownDiscipline,
+  ManifestEntry,
+} from './discipline-blocks';
+
+/** Largest page the upstream API accepts. */
+const MAX_LIMIT = 50;
+
+const MAX_RETRIES = 3;
+const RETRY_BASE_MS = 400;
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 interface ExamSummary {
   year: number;
@@ -18,6 +31,7 @@ interface ExamSummary {
 interface ExamDetails {
   disciplines: Discipline[];
   languages: Discipline[];
+  questions: ManifestEntry[];
 }
 
 interface QuestionsResponse {
@@ -37,16 +51,23 @@ export interface QuestionRef {
   index: number;
 }
 
+interface ExamData {
+  blocks: Map<string, DisciplineBlock>;
+  /** Every question of the year, keyed by index. */
+  questions: Map<number, Question>;
+}
+
 @Injectable()
 export class ExamsService {
   private readonly logger = new Logger(ExamsService.name);
   private readonly baseUrl: string;
 
   /**
-   * Past exams are immutable, so a pool is fetched once per process. This also
-   * makes the PDF's re-fetch of a drawn question essentially free.
+   * Past exams are immutable, so each year is fetched once per process. Caching
+   * the promise (not the result) means concurrent draws share a single fetch.
    */
-  private readonly pools = new Map<string, Promise<Question[]>>();
+  private readonly exams = new Map<number, Promise<ExamData>>();
+  private readonly languagePools = new Map<string, Promise<Question[]>>();
 
   constructor(
     private readonly http: HttpService,
@@ -58,20 +79,36 @@ export class ExamsService {
     );
   }
 
+  /**
+   * Fetches a path, retrying on rate limits and upstream server errors.
+   * Building a year costs five requests fired together (the manifest plus one
+   * page per block), which is enough to trip api.enem.dev's rate limiter on a
+   * cold cache; without a retry the first visitor after a deploy gets an error.
+   */
   private async get<T>(path: string): Promise<T> {
-    try {
-      const { data } = await firstValueFrom(
-        this.http.get<T>(`${this.baseUrl}${path}`),
-      );
-      return data;
-    } catch (error) {
-      const axiosError = error as AxiosError;
-      this.logger.error(
-        `Upstream request failed: GET ${path} -> ${axiosError.message}`,
-      );
-      throw new ServiceUnavailableException(
-        'Não foi possível consultar a API do ENEM no momento.',
-      );
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const { data } = await firstValueFrom(
+          this.http.get<T>(`${this.baseUrl}${path}`),
+        );
+        return data;
+      } catch (error) {
+        const axiosError = error as AxiosError;
+        const status = axiosError.response?.status;
+        const retryable =
+          status === 429 || status === undefined || status >= 500;
+
+        if (!retryable || attempt >= MAX_RETRIES) {
+          this.logger.error(
+            `Upstream request failed: GET ${path} -> ${axiosError.message}`,
+          );
+          throw new ServiceUnavailableException(
+            'Não foi possível consultar a API do ENEM no momento.',
+          );
+        }
+
+        await sleep(RETRY_BASE_MS * 2 ** attempt);
+      }
     }
   }
 
@@ -124,69 +161,112 @@ export class ExamsService {
    */
   async getQuestionsByRef(refs: QuestionRef[]): Promise<Question[]> {
     const years = [...new Set(refs.map((ref) => ref.year))];
+    const byYear = new Map<number, ExamData>();
 
-    const byYear = new Map<number, Map<number, Question>>();
     await Promise.all(
-      years.map(async (year) => {
-        const questions = await this.getYearQuestions(year);
-        byYear.set(year, new Map(questions.map((q) => [q.index, q])));
-      }),
+      years.map(async (year) => byYear.set(year, await this.getExam(year))),
     );
 
-    const resolved: Question[] = [];
-    for (const ref of refs) {
-      const question = byYear.get(ref.year)?.get(ref.index);
+    return refs.map((ref) => {
+      const question = byYear.get(ref.year)?.questions.get(ref.index);
       if (!question) {
         throw new BadRequestException(
           `Questão ${ref.index} não encontrada no ENEM ${ref.year}.`,
         );
       }
-      resolved.push(question);
-    }
-    return resolved;
+      return question;
+    });
   }
 
-  private getPool(year: number, discipline: string): Promise<Question[]> {
-    const key = `${year}:${discipline}`;
-    const cached = this.pools.get(key);
+  /**
+   * The questions a discipline can draw from, taken by position rather than by
+   * the API's per-question labels, which are unreliable — see
+   * `deriveDisciplineBlocks`.
+   */
+  private async getPool(year: number, discipline: string): Promise<Question[]> {
+    if (discipline === 'ingles' || discipline === 'espanhol') {
+      return this.getLanguagePool(year, discipline);
+    }
+
+    const exam = await this.getExam(year);
+    const block = exam.blocks.get(discipline);
+    if (!block) return [];
+
+    const questions = [...exam.questions.values()].filter(
+      (q) => q.index >= block.offset && q.index < block.end,
+    );
+
+    // The foreign-language questions open the Linguagens block, but they belong
+    // to whichever language the student sat, not to Linguagens as a whole.
+    return discipline === 'linguagens'
+      ? questions.filter((q) => !q.language)
+      : questions;
+  }
+
+  private getLanguagePool(year: number, language: string): Promise<Question[]> {
+    const key = `${year}:${language}`;
+    const cached = this.languagePools.get(key);
     if (cached) return cached;
 
-    // Cache the promise, not the result, so concurrent draws share one fetch.
-    const pool = this.fetchDisciplinePool(year, discipline).catch((error) => {
-      this.pools.delete(key);
+    const pool = this.fetchLanguagePool(year, language).catch((error) => {
+      this.languagePools.delete(key);
       throw error;
     });
-    this.pools.set(key, pool);
+    this.languagePools.set(key, pool);
     return pool;
   }
 
-  private async fetchDisciplinePool(
+  private async fetchLanguagePool(
     year: number,
-    discipline: string,
+    language: string,
   ): Promise<Question[]> {
-    const range = DISCIPLINE_RANGES[discipline];
+    const exam = await this.getExam(year);
+    const block = exam.blocks.get('linguagens');
+    if (!block) return [];
 
-    if (range.language) {
-      const data = await this.get<QuestionsResponse>(
-        `/exams/${year}/questions?language=${range.language}&limit=10`,
-      );
-      return data.questions.filter((q) => q.language === range.language);
-    }
-
+    // Anchored to the Linguagens block: before 2017 it started at 91, not 1,
+    // and querying from the top of the exam simply found nothing.
     const data = await this.get<QuestionsResponse>(
-      `/exams/${year}/questions?offset=${range.offset}&limit=${range.limit}`,
+      `/exams/${year}/questions?language=${language}&offset=${block.offset}&limit=10`,
     );
-    return data.questions.filter((q) => q.discipline === discipline);
+    return data.questions.filter((q) => q.language === language);
   }
 
-  /** Every question of a year, assembled from the per-discipline pools. */
-  private async getYearQuestions(year: number): Promise<Question[]> {
-    const pools = await Promise.all(
-      Object.keys(DISCIPLINE_RANGES).map((discipline) =>
-        this.getPool(year, discipline),
+  private getExam(year: number): Promise<ExamData> {
+    const cached = this.exams.get(year);
+    if (cached) return cached;
+
+    const exam = this.fetchExam(year).catch((error) => {
+      this.exams.delete(year);
+      throw error;
+    });
+    this.exams.set(year, exam);
+    return exam;
+  }
+
+  private async fetchExam(year: number): Promise<ExamData> {
+    const details = await this.get<ExamDetails>(`/exams/${year}`);
+    const blocks = deriveDisciplineBlocks(details.questions ?? []);
+
+    // One page per block. Pages are requested a little wider than a block
+    // because annulled questions leave gaps in the numbering (2023 has no 34
+    // or 174), and `limit` counts questions returned, not indexes covered.
+    const pages = await Promise.all(
+      [...new Set([...blocks.values()].map((b) => b.offset))].map((offset) =>
+        this.get<QuestionsResponse>(
+          `/exams/${year}/questions?offset=${offset}&limit=${MAX_LIMIT}`,
+        ),
       ),
     );
-    return pools.flat();
+
+    const questions = new Map<number, Question>();
+    for (const page of pages) {
+      for (const question of page.questions) {
+        questions.set(question.index, question);
+      }
+    }
+
+    return { blocks, questions };
   }
 
   /** Fisher-Yates partial shuffle: returns `count` distinct random items. */
