@@ -9,10 +9,7 @@ import { ConfigService } from '@nestjs/config';
 import { AxiosError } from 'axios';
 import { firstValueFrom } from 'rxjs';
 import { Discipline, Question } from '../common/question.interface';
-import {
-  DISCIPLINE_RANGES,
-  isKnownDiscipline,
-} from './discipline-ranges';
+import { DISCIPLINE_RANGES, isKnownDiscipline } from './discipline-ranges';
 
 interface ExamSummary {
   year: number;
@@ -27,10 +24,29 @@ interface QuestionsResponse {
   questions: Question[];
 }
 
+/** One "draw this many of this subject from this year" request. */
+export interface Selection {
+  year: number;
+  discipline: string;
+  amount: number;
+}
+
+/** Identifies a question without shipping its content (or its answer) around. */
+export interface QuestionRef {
+  year: number;
+  index: number;
+}
+
 @Injectable()
 export class ExamsService {
   private readonly logger = new Logger(ExamsService.name);
   private readonly baseUrl: string;
+
+  /**
+   * Past exams are immutable, so a pool is fetched once per process. This also
+   * makes the PDF's re-fetch of a drawn question essentially free.
+   */
+  private readonly pools = new Map<string, Promise<Question[]>>();
 
   constructor(
     private readonly http: HttpService,
@@ -71,27 +87,77 @@ export class ExamsService {
     return [...details.disciplines, ...details.languages];
   }
 
-  /** Randomly pick `amount` questions of a discipline for a given year. */
-  async getRandomQuestions(
-    year: number,
-    discipline: string,
-    amount: number,
-  ): Promise<Question[]> {
-    if (!isKnownDiscipline(discipline)) {
-      throw new BadRequestException(
-        `Disciplina desconhecida: "${discipline}".`,
-      );
+  /**
+   * Draws random questions for each selection and concatenates the results,
+   * keeping the caller's selection order so the PDF groups by subject.
+   */
+  async drawQuestions(selections: Selection[]): Promise<Question[]> {
+    for (const selection of selections) {
+      if (!isKnownDiscipline(selection.discipline)) {
+        throw new BadRequestException(
+          `Disciplina desconhecida: "${selection.discipline}".`,
+        );
+      }
     }
 
-    const pool = await this.fetchDisciplinePool(year, discipline);
+    const drawn = await Promise.all(
+      selections.map(async (selection) => {
+        const pool = await this.getPool(selection.year, selection.discipline);
+        return this.sample(pool, Math.min(selection.amount, pool.length));
+      }),
+    );
 
-    if (pool.length === 0) {
+    const questions = drawn.flat();
+
+    if (questions.length === 0) {
       throw new ServiceUnavailableException(
-        'Nenhuma questão encontrada para essa disciplina/ano.',
+        'Nenhuma questão encontrada para essa seleção.',
       );
     }
 
-    return this.sample(pool, Math.min(amount, pool.length));
+    return questions;
+  }
+
+  /**
+   * Resolves refs back to full questions (answers included). Lets the PDF work
+   * from server-side data instead of trusting whatever the client posts back.
+   */
+  async getQuestionsByRef(refs: QuestionRef[]): Promise<Question[]> {
+    const years = [...new Set(refs.map((ref) => ref.year))];
+
+    const byYear = new Map<number, Map<number, Question>>();
+    await Promise.all(
+      years.map(async (year) => {
+        const questions = await this.getYearQuestions(year);
+        byYear.set(year, new Map(questions.map((q) => [q.index, q])));
+      }),
+    );
+
+    const resolved: Question[] = [];
+    for (const ref of refs) {
+      const question = byYear.get(ref.year)?.get(ref.index);
+      if (!question) {
+        throw new BadRequestException(
+          `Questão ${ref.index} não encontrada no ENEM ${ref.year}.`,
+        );
+      }
+      resolved.push(question);
+    }
+    return resolved;
+  }
+
+  private getPool(year: number, discipline: string): Promise<Question[]> {
+    const key = `${year}:${discipline}`;
+    const cached = this.pools.get(key);
+    if (cached) return cached;
+
+    // Cache the promise, not the result, so concurrent draws share one fetch.
+    const pool = this.fetchDisciplinePool(year, discipline).catch((error) => {
+      this.pools.delete(key);
+      throw error;
+    });
+    this.pools.set(key, pool);
+    return pool;
   }
 
   private async fetchDisciplinePool(
@@ -111,6 +177,16 @@ export class ExamsService {
       `/exams/${year}/questions?offset=${range.offset}&limit=${range.limit}`,
     );
     return data.questions.filter((q) => q.discipline === discipline);
+  }
+
+  /** Every question of a year, assembled from the per-discipline pools. */
+  private async getYearQuestions(year: number): Promise<Question[]> {
+    const pools = await Promise.all(
+      Object.keys(DISCIPLINE_RANGES).map((discipline) =>
+        this.getPool(year, discipline),
+      ),
+    );
+    return pools.flat();
   }
 
   /** Fisher-Yates partial shuffle: returns `count` distinct random items. */

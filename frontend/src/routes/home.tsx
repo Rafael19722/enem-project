@@ -1,22 +1,13 @@
 import { useState } from 'react';
+import {
+  SelectionRow,
+  type SelectionRowValue,
+} from '@/components/selection-row';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
-import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
-import {
-  useDisciplines,
-  useDrawQuestions,
-  useGeneratePdf,
-  useYears,
-} from '@/hooks/useExams';
-import type { Question } from '@/lib/types';
+import { useDrawQuestions, useGeneratePdf, useYears } from '@/hooks/useExams';
+import type { Question, Selection } from '@/lib/types';
 
 function snippet(text: string | null, max = 160): string {
   if (!text) return '';
@@ -29,25 +20,47 @@ function snippet(text: string | null, max = 160): string {
   return clean.length > max ? `${clean.slice(0, max)}…` : clean;
 }
 
+function newRow(year: number | null = null): SelectionRowValue {
+  return { id: crypto.randomUUID(), year, discipline: '', amount: 5 };
+}
+
 export function Home() {
-  const [year, setYear] = useState<number | null>(null);
-  const [discipline, setDiscipline] = useState('');
-  const [amount, setAmount] = useState(5);
+  const [rows, setRows] = useState<SelectionRowValue[]>([newRow()]);
   const [questions, setQuestions] = useState<Question[] | null>(null);
 
   const years = useYears();
-  const disciplines = useDisciplines(year);
   const draw = useDrawQuestions();
   const pdf = useGeneratePdf();
 
-  const canDraw = year !== null && discipline !== '' && amount > 0;
+  const selections: Selection[] = rows
+    .filter((r) => r.year !== null && r.discipline !== '')
+    .map((r) => ({
+      year: r.year as number,
+      discipline: r.discipline,
+      amount: r.amount,
+    }));
+
+  const total = selections.reduce((sum, s) => sum + s.amount, 0);
+  const canDraw = selections.length > 0 && !draw.isPending;
+
+  function updateRow(next: SelectionRowValue) {
+    setRows((prev) => prev.map((r) => (r.id === next.id ? next : r)));
+    setQuestions(null);
+  }
+
+  function addRow() {
+    // Reuse the last year picked — most people build a simulado from one exam.
+    setRows((prev) => [...prev, newRow(prev.at(-1)?.year ?? null)]);
+  }
+
+  function removeRow(id: string) {
+    setRows((prev) => prev.filter((r) => r.id !== id));
+    setQuestions(null);
+  }
 
   function handleDraw() {
-    if (!canDraw || year === null) return;
-    draw.mutate(
-      { year, discipline, amount },
-      { onSuccess: (data) => setQuestions(data) },
-    );
+    if (selections.length === 0) return;
+    draw.mutate(selections, { onSuccess: setQuestions });
   }
 
   return (
@@ -56,97 +69,47 @@ export function Home() {
         Monte seu simulado do ENEM
       </h1>
       <p className="mt-2 mb-8 leading-relaxed text-muted-foreground">
-        Escolha o ano e a disciplina, defina quantas questões quer e gere um PDF
-        com questões sorteadas aleatoriamente.
+        Escolha as matérias e os anos, defina quantas questões quer de cada uma e
+        gere um PDF com questões sorteadas aleatoriamente e gabarito no final.
       </p>
 
       <Card>
-        <CardContent className="grid grid-cols-1 items-end gap-4 sm:grid-cols-[1fr_1fr_auto_auto]">
-          <div className="grid gap-2">
-            <Label htmlFor="year">Ano</Label>
-            <Select
-              value={year !== null ? year.toString() : null}
-              disabled={years.isLoading || years.isError}
-              onValueChange={(v) => {
-                setYear(v ? Number(v) : null);
-                setDiscipline('');
-                setQuestions(null);
-              }}
-            >
-              <SelectTrigger id="year" className="w-full">
-                <SelectValue
-                  placeholder={
-                    years.isLoading
-                      ? 'Carregando…'
-                      : years.isError
-                        ? 'Erro ao carregar'
-                        : 'Selecione o ano'
-                  }
-                />
-              </SelectTrigger>
-              <SelectContent>
-                {years.data?.map((y) => (
-                  <SelectItem key={y} value={y.toString()}>
-                    {y}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+        <CardContent className="flex flex-col gap-4">
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_1.6fr_auto_auto]">
+            <Label className="max-sm:hidden">Ano</Label>
+            <Label className="max-sm:hidden">Matéria</Label>
+            <Label className="max-sm:hidden sm:w-20">Qtd.</Label>
+            <span />
           </div>
 
-          <div className="grid gap-2">
-            <Label htmlFor="discipline">Disciplina</Label>
-            <Select
-              items={disciplines.data ?? []}
-              value={discipline || null}
-              disabled={year === null || disciplines.isLoading}
-              onValueChange={(v) => {
-                setDiscipline(v ?? '');
-                setQuestions(null);
-              }}
-            >
-              <SelectTrigger id="discipline" className="w-full">
-                <SelectValue
-                  placeholder={
-                    year === null
-                      ? 'Escolha o ano'
-                      : disciplines.isLoading
-                        ? 'Carregando…'
-                        : 'Selecione a disciplina'
-                  }
-                />
-              </SelectTrigger>
-              <SelectContent>
-                {disciplines.data?.map((d) => (
-                  <SelectItem key={d.value} value={d.value}>
-                    {d.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-
-          <div className="grid gap-2 sm:w-24">
-            <Label htmlFor="amount">Qtd.</Label>
-            <Input
-              id="amount"
-              type="number"
-              min={1}
-              max={45}
-              value={amount}
-              onChange={(e) =>
-                setAmount(Math.max(1, Math.min(45, Number(e.target.value) || 1)))
-              }
+          {rows.map((row) => (
+            <SelectionRow
+              key={row.id}
+              value={row}
+              years={years.data ?? []}
+              yearsDisabled={years.isLoading || years.isError}
+              canRemove={rows.length > 1}
+              onChange={updateRow}
+              onRemove={() => removeRow(row.id)}
             />
-          </div>
+          ))}
 
-          <Button
-            onClick={handleDraw}
-            disabled={!canDraw || draw.isPending}
-            className="max-sm:col-span-full"
-          >
-            {draw.isPending ? 'Sorteando…' : 'Sortear questões'}
-          </Button>
+          <div className="flex flex-wrap items-center justify-between gap-3 border-t pt-4">
+            <Button variant="outline" onClick={addRow}>
+              + Adicionar matéria
+            </Button>
+
+            <div className="flex items-center gap-4">
+              <span className="text-sm text-muted-foreground">
+                {total > 0
+                  ? `${total} ${total === 1 ? 'questão' : 'questões'}`
+                  : 'Nenhuma matéria selecionada'}
+              </span>
+              <Button onClick={handleDraw} disabled={!canDraw}>
+                {draw.isPending ? 'Sorteando…' : 'Sortear simulado'}
+              </Button>
+            </div>
+          </div>
         </CardContent>
       </Card>
 
@@ -168,7 +131,8 @@ export function Home() {
         <section className="mt-10">
           <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
             <h2 className="text-xl font-semibold">
-              {questions.length} questões sorteadas
+              {questions.length}{' '}
+              {questions.length === 1 ? 'questão sorteada' : 'questões sorteadas'}
             </h2>
             <div className="flex gap-2">
               <Button
@@ -196,11 +160,14 @@ export function Home() {
           <ol className="flex flex-col gap-3">
             {questions.map((q) => (
               <li
-                key={q.index}
+                key={`${q.year}-${q.index}`}
                 className="flex items-start gap-3 rounded-lg border bg-card p-4"
               >
                 <span className="shrink-0 pt-0.5 text-sm font-bold text-primary">
                   #{q.index}
+                </span>
+                <span className="shrink-0 pt-0.5 text-xs text-muted-foreground">
+                  {q.year}
                 </span>
                 <p className="text-sm leading-relaxed text-muted-foreground">
                   {snippet(q.context) ||
