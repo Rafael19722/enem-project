@@ -4,11 +4,26 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
     <meta
       name="description"
       content="Gere simulados do ENEM em PDF com questões sorteadas por ano e disciplina."
     />
     <title>ENEM · Gerador de Simulados</title>
+    <script>
+      // Runs before first paint: React mounting later would be too late and a
+      // dark-mode visitor would get a white flash. Keep the key and the
+      // fallback in sync with src/hooks/useTheme.ts.
+      try {
+        var stored = localStorage.getItem('enem-theme');
+        var dark = stored
+          ? stored === 'dark'
+          : window.matchMedia('(prefers-color-scheme: dark)').matches;
+        if (dark) document.documentElement.classList.add('dark');
+      } catch (e) {
+        // Private mode can throw on localStorage; light theme is a fine default.
+      }
+    </script>
   </head>
   <body>
     <div id="root"></div>
