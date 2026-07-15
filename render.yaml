@@ -1,0 +1,19 @@
+# Render Blueprint — backend NestJS
+# Import this repo em https://dashboard.render.com/blueprints
+services:
+  - type: web
+    name: enem-backend
+    runtime: node
+    plan: free
+    rootDir: backend
+    buildCommand: pnpm install && pnpm run build
+    startCommand: node dist/main.js
+    healthCheckPath: /exams/years
+    envVars:
+      # PORT é injetada automaticamente pelo Render
+      - key: ENEM_API_URL
+        value: https://api.enem.dev/v1
+      # Defina com o domínio da Vercel (ex.: https://enem.vercel.app).
+      # Aceita múltiplas origens separadas por vírgula.
+      - key: CORS_ORIGIN
+        sync: false
