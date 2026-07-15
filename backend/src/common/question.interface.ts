@@ -12,6 +12,8 @@ export interface Alternative {
 export interface Question {
   title: string;
   index: number;
+  /** `year` + `index` identify a question; the PDF is requested by that pair. */
+  year: number;
   discipline: string | null;
   language: string | null;
   context: string | null;
