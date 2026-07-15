@@ -6,25 +6,11 @@ import {
   ParseIntPipe,
   Post,
 } from '@nestjs/common';
-import { Discipline, Question } from '../common/question.interface';
+import { Discipline } from '../common/question.interface';
+import { CheckAnswersDto } from './dto/check-answers.dto';
 import { DrawQuestionsDto } from './dto/draw-questions.dto';
-import { ExamsService } from './exams.service';
-
-/**
- * Removes the answer from a question. The browser only renders previews, and
- * the PDF is built server-side from refs, so nothing downstream needs these.
- */
-function withoutAnswers(question: Question): Question {
-  return {
-    ...question,
-    correctAlternative: undefined,
-    alternatives: question.alternatives.map((alt) => ({
-      letter: alt.letter,
-      text: alt.text,
-      file: alt.file,
-    })),
-  };
-}
+import { ExamQuestion, toExamQuestion } from './exam-question.dto';
+import { AnswerResult, ExamsService } from './exams.service';
 
 @Controller('exams')
 export class ExamsController {
@@ -43,8 +29,20 @@ export class ExamsController {
   }
 
   @Post('draw')
-  async drawQuestions(@Body() dto: DrawQuestionsDto): Promise<Question[]> {
+  async drawQuestions(@Body() dto: DrawQuestionsDto): Promise<ExamQuestion[]> {
     const questions = await this.examsService.drawQuestions(dto.selections);
-    return questions.map(withoutAnswers);
+    return questions.map(toExamQuestion);
+  }
+
+  /**
+   * Grades answers server-side so the key never sits in the page while someone
+   * is still working through the questions. This is not anti-cheat: the reply
+   * has to name the right alternative for the review screen to teach anything,
+   * so it can be farmed by whoever means to. It stops accidental spoilers, and
+   * with no ranking or public score that is the failure worth preventing.
+   */
+  @Post('check')
+  checkAnswers(@Body() dto: CheckAnswersDto): Promise<AnswerResult[]> {
+    return this.examsService.checkAnswers(dto.answers);
   }
 }

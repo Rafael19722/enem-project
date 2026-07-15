@@ -51,6 +51,16 @@ export interface QuestionRef {
   index: number;
 }
 
+export interface Answer extends QuestionRef {
+  /** Null when left blank, which counts as wrong — same as the real exam. */
+  letter: string | null;
+}
+
+export interface AnswerResult extends QuestionRef {
+  correct: boolean;
+  correctAlternative: string;
+}
+
 interface ExamData {
   blocks: Map<string, DisciplineBlock>;
   /** Every question of the year, keyed by index. */
@@ -175,6 +185,21 @@ export class ExamsService {
         );
       }
       return question;
+    });
+  }
+
+  /** Grades answers against the key, which stays on the server. */
+  async checkAnswers(answers: Answer[]): Promise<AnswerResult[]> {
+    const questions = await this.getQuestionsByRef(answers);
+
+    return answers.map((answer, i) => {
+      const correctAlternative = questions[i].correctAlternative ?? '';
+      return {
+        year: answer.year,
+        index: answer.index,
+        correct: answer.letter !== null && answer.letter === correctAlternative,
+        correctAlternative,
+      };
     });
   }
 

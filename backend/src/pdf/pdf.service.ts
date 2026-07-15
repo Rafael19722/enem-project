@@ -2,6 +2,12 @@ import { Injectable } from '@nestjs/common';
 import { join } from 'path';
 import PDFDocument from 'pdfkit';
 import { Writable } from 'stream';
+import {
+  alternativeSegments,
+  cleanText,
+  ContentSegment,
+  contextSegments,
+} from '../common/question-content';
 import { Alternative, Question } from '../common/question.interface';
 import { ImageLoader, LoadedImage } from './image-loader';
 
@@ -45,15 +51,6 @@ interface Size {
   width: number;
   height: number;
 }
-
-/** A run of statement content: prose, or a figure sitting between prose. */
-type Segment = { kind: 'text'; value: string } | { kind: 'image'; url: string };
-
-/** Matches a markdown image or an <img> tag, capturing the source URL. */
-const IMAGE_PATTERN = /!\[[^\]]*\]\(([^)]+)\)|<img[^>]+src="([^">]+)"[^>]*>/g;
-
-/** A text run carrying no words — punctuation stranded by an image split. */
-const PUNCTUATION_ONLY = /^[\s.,;:!?)\]]+$/;
 
 @Injectable()
 export class PdfService {
@@ -177,70 +174,9 @@ export class PdfService {
 
   // --- content -------------------------------------------------------------
 
-  /**
-   * Splits a statement into prose and figures in reading order.
-   *
-   * The API embeds figures mid-sentence, and stripping them left the prose
-   * dangling ("Considere 0,3 como aproximação para ." in 2023 question 152)
-   * with every figure dumped below the text, out of order. Punctuation left
-   * stranded by a split is folded back onto the preceding sentence.
-   */
-  private parseSegments(raw: string | null | undefined): Segment[] {
-    if (!raw) return [];
-
-    const segments: Segment[] = [];
-    let cursor = 0;
-
-    const pushText = (value: string) => {
-      const text = this.cleanText(value);
-      if (!text) return;
-
-      // Look past the image that split it off to reach the sentence it ends.
-      const lastText = segments.findLast((s) => s.kind === 'text');
-      if (PUNCTUATION_ONLY.test(text) && lastText?.kind === 'text') {
-        lastText.value += text;
-        return;
-      }
-      segments.push({ kind: 'text', value: text });
-    };
-
-    IMAGE_PATTERN.lastIndex = 0;
-    for (
-      let match = IMAGE_PATTERN.exec(raw);
-      match !== null;
-      match = IMAGE_PATTERN.exec(raw)
-    ) {
-      pushText(raw.slice(cursor, match.index));
-      const url = (match[1] ?? match[2])?.trim();
-      if (url) segments.push({ kind: 'image', url });
-      cursor = match.index + match[0].length;
-    }
-    pushText(raw.slice(cursor));
-
-    return segments;
-  }
-
-  /**
-   * The statement's segments, plus any image from `files` the prose never
-   * referenced. `files` lists every figure of the question, so it backfills
-   * whatever the inline markers missed.
-   */
-  private contextSegments(question: Question): Segment[] {
-    const segments = this.parseSegments(question.context);
-    const seen = new Set(
-      segments.flatMap((s) => (s.kind === 'image' ? [s.url] : [])),
-    );
-
-    for (const file of question.files ?? []) {
-      if (!seen.has(file)) segments.push({ kind: 'image', url: file });
-    }
-
-    return segments;
-  }
-
+  /** The figure an alternative is made of, if it is a figure rather than prose. */
   private alternativeImage(alt: Alternative): string | null {
-    if (alt.file) return alt.file;
-    const [segment] = this.parseSegments(alt.text).filter(
+    const [segment] = alternativeSegments(alt).filter(
       (s) => s.kind === 'image',
     );
     return segment?.kind === 'image' ? segment.url : null;
@@ -249,7 +185,7 @@ export class PdfService {
   private collectImageUrls(questions: Question[]): string[] {
     const urls: string[] = [];
     for (const question of questions) {
-      for (const segment of this.contextSegments(question)) {
+      for (const segment of contextSegments(question)) {
         if (segment.kind === 'image') urls.push(segment.url);
       }
       for (const alt of question.alternatives) {
@@ -306,13 +242,13 @@ export class PdfService {
 
     doc.fontSize(10).font(FONT_REGULAR);
 
-    for (const segment of this.contextSegments(question)) {
+    for (const segment of contextSegments(question)) {
       height +=
         this.measureSegment(doc, segment, columnWidth, pageHeight) +
         SEGMENT_GAP;
     }
 
-    const intro = this.cleanText(question.alternativesIntroduction);
+    const intro = cleanText(question.alternativesIntroduction);
     if (intro) {
       height +=
         doc.heightOfString(intro, { width: columnWidth, align: 'justify' }) +
@@ -328,7 +264,7 @@ export class PdfService {
 
   private measureSegment(
     doc: PDFKit.PDFDocument,
-    segment: Segment,
+    segment: ContentSegment,
     columnWidth: number,
     pageHeight: number,
   ): number {
@@ -362,7 +298,7 @@ export class PdfService {
       return Math.max(size.height, 14) + 8;
     }
 
-    const text = this.cleanText(alt.text);
+    const text = cleanText(alt.text);
     if (!text) return 0;
 
     return (
@@ -393,13 +329,13 @@ export class PdfService {
 
     doc.fontSize(10).font(FONT_REGULAR);
 
-    for (const segment of this.contextSegments(question)) {
+    for (const segment of contextSegments(question)) {
       currentY =
         this.renderSegment(doc, segment, x, currentY, columnWidth, pageHeight) +
         SEGMENT_GAP;
     }
 
-    const intro = this.cleanText(question.alternativesIntroduction);
+    const intro = cleanText(question.alternativesIntroduction);
     if (intro) {
       doc.text(intro, x, currentY, { width: columnWidth, align: 'justify' });
       currentY = doc.y + SEGMENT_GAP;
@@ -414,7 +350,7 @@ export class PdfService {
 
   private renderSegment(
     doc: PDFKit.PDFDocument,
-    segment: Segment,
+    segment: ContentSegment,
     x: number,
     y: number,
     columnWidth: number,
@@ -457,7 +393,7 @@ export class PdfService {
       return y + Math.max(size.height, 14) + 8;
     }
 
-    const text = this.cleanText(alt.text);
+    const text = cleanText(alt.text);
     if (!text) return y;
 
     doc.text(`${alt.letter}) ${text}`, x, y, {
@@ -512,23 +448,5 @@ export class PdfService {
         width: cellWidth,
       });
     });
-  }
-
-  // --- text ----------------------------------------------------------------
-
-  /** Strips HTML/markdown noise and normalizes whitespace. */
-  private cleanText(text: string | null | undefined): string {
-    if (!text) return '';
-    return (
-      text
-        .replace(/<[^>]*>/g, '')
-        .replace(/\*\*(.*?)\*\*/g, '$1')
-        .replace(/\*(.*?)\*/g, '$1')
-        // The API marks variables as _N_ / _I_; without this they read literally.
-        .replace(/_(.+?)_/g, '$1')
-        .replace(/\s+/g, ' ')
-        .replace(/\\n/g, '\n')
-        .trim()
-    );
   }
 }
