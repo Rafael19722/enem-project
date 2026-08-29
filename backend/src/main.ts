@@ -1,9 +1,12 @@
 import { ValidationPipe } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
+import type { NestExpressApplication } from '@nestjs/platform-express';
 import { AppModule } from './app.module';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create<NestExpressApplication>(AppModule);
+
+  app.set('trust proxy', 1);
 
   const corsOrigin = process.env.CORS_ORIGIN ?? 'http://localhost:5173';
   app.enableCors({
@@ -21,6 +24,5 @@ async function bootstrap() {
 
   const port = process.env.PORT ?? 5000;
   await app.listen(port);
-  console.log(`🚀 Backend rodando em http://localhost:${port}`);
 }
 void bootstrap();
