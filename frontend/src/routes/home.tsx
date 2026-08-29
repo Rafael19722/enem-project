@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { Download, Loader2, RotateCcw } from 'lucide-react';
 import { ModePicker } from '@/components/mode-picker';
 import { QuestionCard } from '@/components/question-card';
 import { ResultSummary } from '@/components/result-summary';
@@ -140,9 +141,15 @@ export function Home() {
               onClick={() => pdf.mutate(session.questions)}
               disabled={pdf.isPending}
             >
+              {pdf.isPending ? (
+                <Loader2 data-icon="inline-start" className="animate-spin" />
+              ) : (
+                <Download data-icon="inline-start" />
+              )}
               {pdf.isPending ? 'Gerando…' : 'Baixar PDF'}
             </Button>
             <Button variant="ghost" onClick={handleRestart}>
+              <RotateCcw data-icon="inline-start" />
               Novo simulado
             </Button>
           </div>
@@ -197,13 +204,15 @@ export function Home() {
 
   return (
     <div>
-      <h1 className="text-3xl font-bold tracking-tight">
-        Monte seu simulado do ENEM
-      </h1>
-      <p className="mt-2 mb-8 leading-relaxed text-muted-foreground">
-        Escolha as matérias e os anos, defina quantas questões quer de cada uma e
-        responda aqui mesmo — ou baixe em PDF pra imprimir. Sem cadastro.
-      </p>
+      <div className="mb-8 text-center">
+        <h1 className="text-3xl font-bold tracking-tight">
+          Monte seu simulado do ENEM
+        </h1>
+        <p className="mx-auto mt-2 max-w-xl leading-relaxed text-muted-foreground">
+          Escolha as matérias e os anos, defina quantas questões quer de cada uma
+          e responda aqui mesmo, ou baixe em PDF pra imprimir. Sem cadastro.
+        </p>
+      </div>
 
       <Card>
         <CardContent className="flex flex-col gap-4">
