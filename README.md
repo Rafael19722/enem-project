@@ -15,19 +15,19 @@ Reescrita modernizada de um projeto legado (`enem_consume`).
 | Frontend | Vite + React + TypeScript, TanStack Query/Router, shadcn/ui (Base UI) + Tailwind v4 |
 | Backend  | NestJS 11 + Prisma 6 (lê do Postgres, gera PDF com pdfkit)         |
 | Banco    | PostgreSQL 16 (espelho da api.enem.dev)                            |
-| Deploy   | Frontend → Vercel · Backend → Render                              |
+| Deploy   | Frontend → Vercel · Backend + banco → VPS Ubuntu (Docker + Caddy) |
 | Gerenciador | pnpm                                                           |
 
 ## Estrutura
 
 ```
 enem-project/
-├── backend/            # NestJS  (deploy: Render)
+├── backend/            # NestJS  (Dockerfile do deploy junto)
 │   ├── prisma/         # schema e migrações do banco
 │   └── src/database/   # coleta da api.enem.dev que popula o banco
 ├── frontend/           # Vite SPA (deploy: Vercel)
-├── docker-compose.yml  # Postgres do espelho (local e VPS)
-└── render.yaml         # blueprint do backend no Render
+├── docker-compose.yml  # Postgres do espelho, para desenvolver local
+└── deploy/             # stack da VPS: backend + banco, e o Caddy compartilhado
 ```
 
 ## Rodando localmente
@@ -58,7 +58,7 @@ pnpm run dev
 
 | Variável       | Descrição                                             |
 | -------------- | ----------------------------------------------------- |
-| `PORT`         | Porta do servidor (Render injeta a sua)               |
+| `PORT`         | Porta do servidor (5000 no container)                  |
 | `CORS_ORIGIN`  | Origens permitidas, separadas por vírgula             |
 | `ENEM_API_URL` | Base da API do ENEM, usada só pelo `db:ingest`         |
 | `DATABASE_URL` | Postgres de onde o backend lê (`postgresql://enem:enem@localhost:5433/enem`) |
@@ -245,40 +245,58 @@ mexe no frontend, na sessão do `localStorage` e nos dois DTOs.
 
 ## Deploy
 
-### Backend — Render
+Frontend na Vercel, backend e banco numa VPS Ubuntu com Docker. O `deploy/`
+guarda a stack de produção — o `docker-compose.yml` da raiz continua sendo só o
+Postgres de desenvolvimento.
 
-1. Novo **Blueprint** apontando para este repo (usa o `render.yaml`), ou um
-   **Web Service** manual com root `backend/`.
-2. Build: `pnpm install && pnpm run build` · Start: `node dist/main.js`
-3. Env var `CORS_ORIGIN` = domínio da Vercel (ex.: `https://enem.vercel.app`).
+### VPS — uma vez só
 
-> Plano free dorme após ~15min de inatividade; o primeiro request depois disso
-> leva ~30s pra acordar (o front trata isso com um aviso de loading).
-
-### Banco — VPS
-
-O `docker-compose.yml` da raiz é o mesmo local e na VPS. A porta só escuta em
-`127.0.0.1`: o Postgres não precisa estar exposto na internet.
+O Caddy fica numa rede Docker externa, compartilhado: é o único container com
+porta no host, e outros projetos entram na mesma VPS sem brigar por 80/443.
 
 ```bash
-# na VPS
-POSTGRES_PASSWORD=<algo forte> docker compose up -d
+docker network create edge
+scp -r deploy/edge vps:/opt/edge
+ssh vps 'docker compose -f /opt/edge/docker-compose.yml up -d'
 ```
+
+Cada projeto novo ganha um bloco no `/opt/edge/Caddyfile` apontando pro
+`container_name` dele. O certificado o Caddy tira sozinho, desde que o DNS do
+domínio já aponte pra VPS antes de subir.
+
+### Backend + banco
+
+```bash
+# na VPS, dentro do repo
+cp deploy/.env.example deploy/.env      # POSTGRES_PASSWORD e CORS_ORIGIN
+docker compose -f deploy/docker-compose.yml up -d --build
+```
+
+Nenhum dos dois publica porta no host: o Postgres só existe na rede do projeto
+e o backend só é alcançável pelo Caddy, pela rede `edge`. O container roda
+`prisma migrate deploy` no boot, então o banco sobe migrado — e vazio.
 
 Para popular sem passar de novo pelo rate limit da API, leve o cache cru junto
 em vez de coletar tudo outra vez:
 
 ```bash
 rsync -a backend/data/enem/ vps:~/enem-project/backend/data/enem/
-ssh vps 'cd enem-project/backend && pnpm run db:ingest'
+ssh vps 'cd enem-project/backend && pnpm install && pnpm run db:ingest'
 ```
 
-O `db:ingest` roda `prisma migrate deploy` antes de gravar, então o banco vazio
-que o compose acabou de subir já sai pronto. Sem o cache ele funciona igual, só
-demora os poucos minutos da coleta.
+Ou copie o banco local já pronto, que tem ~12 MB:
+
+```bash
+docker exec enem-postgres pg_dump -U enem -d enem --no-owner --no-privileges \
+  | ssh vps 'docker exec -i enem-postgres psql -U enem -d enem'
+```
+
+Depois de um push, atualizar é `git pull && docker compose -f
+deploy/docker-compose.yml up -d --build`.
 
 ### Frontend — Vercel
 
 1. Import do repo com **Root Directory** = `frontend`.
 2. Framework: Vite (detectado). O `vercel.json` já faz o fallback SPA.
-3. Env var `VITE_API_URL` = URL pública do backend no Render.
+3. Env var `VITE_API_URL` = domínio do backend na VPS (ex.:
+   `https://api.seudominio.com.br`).

@@ -1,0 +1,50 @@
+# Stack de produção na VPS: Postgres do espelho + backend NestJS.
+#
+#   docker compose -f deploy/docker-compose.yml up -d --build
+#
+# Nada aqui publica porta no host. O backend só é alcançável pela rede `edge`,
+# onde mora o Caddy compartilhado (deploy/edge/) que termina o TLS e faz o
+# proxy. Os outros projetos da VPS entram na mesma rede do mesmo jeito.
+
+name: enem
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: enem-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-enem}
+      POSTGRES_USER: ${POSTGRES_USER:-enem}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?defina POSTGRES_PASSWORD no deploy/.env}
+    volumes:
+      - enem-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-enem} -d ${POSTGRES_DB:-enem}']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ../backend
+    # O nome é o hostname que o Caddy usa na rede `edge`.
+    container_name: enem-backend
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-enem}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-enem}
+      CORS_ORIGIN: ${CORS_ORIGIN:?defina CORS_ORIGIN com o domínio da Vercel}
+      PORT: 5000
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - default
+      - edge
+
+volumes:
+  enem-pgdata:
+
+networks:
+  edge:
+    external: true
