@@ -3,14 +3,9 @@ import {
   ContentSegment,
   contextSegments,
   parseSegments,
-} from '../common/question-content';
-import { Question } from '../common/question.interface';
+} from '../../common/question-content';
+import { Question } from '../../common/question';
 
-/**
- * A question as the web client sees it: content already parsed into segments,
- * and no answer. The client never has to know about markdown, the API's OCR
- * quirks, or which fields carry a figure — see `question-content.ts`.
- */
 export interface ExamQuestion {
   year: number;
   index: number;

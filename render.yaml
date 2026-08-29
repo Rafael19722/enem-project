@@ -6,13 +6,17 @@ services:
     runtime: node
     plan: free
     rootDir: backend
-    buildCommand: pnpm install && pnpm run build
-    startCommand: node dist/main.js
+    buildCommand: pnpm install && pnpm exec prisma generate && pnpm run build
+    startCommand: pnpm exec prisma migrate deploy && node dist/main.js
     healthCheckPath: /exams/years
     envVars:
       # PORT é injetada automaticamente pelo Render
-      - key: ENEM_API_URL
-        value: https://api.enem.dev/v1
+      #
+      # O backend lê as provas de um Postgres próprio e não fala com a
+      # api.enem.dev — não há fallback. O banco precisa existir e estar
+      # populado (`pnpm run db:ingest`) antes do primeiro request.
+      - key: DATABASE_URL
+        sync: false
       # Defina com o domínio da Vercel (ex.: https://enem.vercel.app).
       # Aceita múltiplas origens separadas por vírgula.
       - key: CORS_ORIGIN

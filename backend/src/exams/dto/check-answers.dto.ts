@@ -24,7 +24,6 @@ export class AnswerDto {
   @Max(200)
   index!: number;
 
-  /** Null when left blank, which counts as wrong — same as the real exam. */
   @IsOptional()
   @IsIn(['A', 'B', 'C', 'D', 'E'])
   letter!: string | null;

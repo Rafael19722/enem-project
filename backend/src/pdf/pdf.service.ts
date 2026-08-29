@@ -8,41 +8,17 @@ import {
   ContentSegment,
   contextSegments,
 } from '../common/question-content';
-import { Alternative, Question } from '../common/question.interface';
+import { Alternative, Question } from '../common/question';
 import { ImageLoader, LoadedImage } from './image-loader';
 
 const MARGIN = 40;
 const QUESTION_GAP = 20;
 const SEGMENT_GAP = 10;
 
-/**
- * pdfkit's built-in Helvetica is limited to WinAnsi, which silently mangles
- * every character outside Latin-1 — π, −, ≠, ∈ and µ all appear in the exams,
- * and the API's OCR renders "TEXTO" headers with Cyrillic homoglyphs. That hit
- * 12 of the 180 questions in ENEM 2023 alone. DejaVu covers all of it, and is
- * bundled (rather than taken from the OS) so deploys don't depend on system
- * fonts being installed.
- */
 const FONTS_DIR = join(__dirname, 'fonts');
 const FONT_REGULAR = 'body';
 const FONT_BOLD = 'body-bold';
 
-/**
- * api.enem.dev crops its images out of scanned booklets without normalizing
- * them: context images run 93-1248px wide and alternative images 35-355px, so
- * pixel size says nothing about intended size and each role needs its own rule.
- *
- * Context images are mixed — big figures *and* small inline formulas — so they
- * are only ever scaled down: a wide figure shrinks to the column, a small
- * formula keeps its native size. Enlarging them just produces blur (a 93px
- * formula stretched to the column is visibly mush). The old code got this right
- * with its scale cap of 1; what broke context images was the 60pt height cap,
- * which squashed every figure regardless of shape.
- *
- * Alternative images are uniform in role — they're formulas sitting next to a
- * letter — so they normalize on height instead, which lines the row up. Here
- * the cap of 1 was the bug: it left 35px formulas at a 12mm-wide speck.
- */
 const CONTEXT_MAX_HEIGHT_RATIO = 0.4;
 const ALTERNATIVE_TARGET_HEIGHT = 46;
 const ALTERNATIVE_MAX_UPSCALE = 1.5;
@@ -56,10 +32,6 @@ interface Size {
 export class PdfService {
   private readonly images = new ImageLoader();
 
-  /**
-   * Renders the questions into a two-column PDF followed by an answer key, and
-   * pipes it to `output`. Resolves once the document is finalized.
-   */
   async streamQuestionsPdf(
     questions: Question[],
     output: Writable,
@@ -83,19 +55,6 @@ export class PdfService {
     });
   }
 
-  // --- layout --------------------------------------------------------------
-
-  /**
-   * Places questions into two columns, returning them in the order they landed
-   * on the page so the answer key can follow the same sequence.
-   *
-   * Strict document order wastes a lot of paper: one question taller than the
-   * space left forces a new page and abandons whatever was still free, which
-   * routinely left a full column blank. Instead each column takes the first
-   * question still pending that actually fits it. Scanning pending in order
-   * keeps the run of a subject together, since a later subject is only reached
-   * once nothing from the current one fits.
-   */
   private layout(doc: PDFKit.PDFDocument, questions: Question[]): Question[] {
     const pageHeight = doc.page.height;
     const columnWidth = (doc.page.width - MARGIN * 3) / 2;
@@ -129,7 +88,6 @@ export class PdfService {
     };
 
     while (pending.length > 0) {
-      // Try the roomier column first so the two stay roughly level.
       const columns =
         pageHeight - MARGIN - leftY >= pageHeight - MARGIN - rightY
           ? ([
@@ -161,8 +119,6 @@ export class PdfService {
       leftY = MARGIN;
       rightY = MARGIN;
 
-      // A question taller than an empty column can never fit, so a fresh page
-      // would not help; render it anyway and let it run past the bottom.
       const oversized = pending[0];
       if (heights.get(oversized)! > columnHeight) {
         leftY = place(oversized, MARGIN, MARGIN);
@@ -172,9 +128,6 @@ export class PdfService {
     return placed;
   }
 
-  // --- content -------------------------------------------------------------
-
-  /** The figure an alternative is made of, if it is a figure rather than prose. */
   private alternativeImage(alt: Alternative): string | null {
     const [segment] = alternativeSegments(alt).filter(
       (s) => s.kind === 'image',
@@ -196,9 +149,6 @@ export class PdfService {
     return urls;
   }
 
-  // --- sizing --------------------------------------------------------------
-
-  /** Shrink-to-fit only: fills the column when wide, stays native when small. */
   private fitContextImage(
     image: LoadedImage,
     columnWidth: number,
@@ -213,7 +163,6 @@ export class PdfService {
     return { width: image.width * scale, height: image.height * scale };
   }
 
-  /** Formulas share a common height so a row of alternatives lines up. */
   private fitAlternativeImage(
     image: LoadedImage,
     availableWidth: number,
@@ -226,19 +175,13 @@ export class PdfService {
     return { width: image.width * scale, height: image.height * scale };
   }
 
-  // --- measurement ---------------------------------------------------------
-
-  /**
-   * Height the question will occupy. Every image is already loaded, so this
-   * agrees with what `renderQuestion` draws — the column breaking depends on it.
-   */
   private measureQuestion(
     doc: PDFKit.PDFDocument,
     question: Question,
     columnWidth: number,
     pageHeight: number,
   ): number {
-    let height = 20; // title
+    let height = 20;
 
     doc.fontSize(10).font(FONT_REGULAR);
 
@@ -308,8 +251,6 @@ export class PdfService {
       }) + 5
     );
   }
-
-  // --- rendering -----------------------------------------------------------
 
   private renderQuestion(
     doc: PDFKit.PDFDocument,
@@ -403,13 +344,6 @@ export class PdfService {
     return doc.y + 5;
   }
 
-  /**
-   * Answer key on its own page, from the `correctAlternative` the API ships.
-   *
-   * Sorted by year and number rather than laid out in page order: this is a
-   * lookup table, and someone marking their simulado is searching it for a
-   * question number, not reading it top to bottom.
-   */
   private renderAnswerKey(
     doc: PDFKit.PDFDocument,
     questions: Question[],
@@ -422,8 +356,6 @@ export class PdfService {
     doc.addPage();
     doc.fontSize(16).font(FONT_BOLD).text('Gabarito', MARGIN, MARGIN);
 
-    // A question number only identifies a question within its own exam, so a
-    // simulado mixing years has to say which year each answer belongs to.
     const multiYear = new Set(answered.map((q) => q.year)).size > 1;
 
     const columns = multiYear ? 4 : 5;
