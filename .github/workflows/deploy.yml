@@ -1,0 +1,46 @@
+# Deploy na VPS. Roda só quando a main muda e o CI dela passa.
+#
+# A chave em VPS_SSH_KEY está presa a um único comando no authorized_keys da
+# VPS (`command="/usr/local/bin/deploy-enem"`), então ela não abre shell: mesmo
+# vazada, só consegue disparar o deploy.
+
+name: Deploy
+
+on:
+  workflow_run:
+    workflows: ['CI']
+    branches: [main]
+    types: [completed]
+  # Botão manual na aba Actions, para redeployar sem push.
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-vps
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Abrir o SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Deploy
+        run: ssh -i ~/.ssh/id_ed25519 root@"${{ secrets.VPS_HOST }}" deploy
+
+      - name: Conferir se subiu
+        run: |
+          for i in $(seq 1 20); do
+            if curl -sf --max-time 10 "${{ vars.HEALTHCHECK_URL }}" > /dev/null; then
+              echo "backend respondendo"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "backend não respondeu depois do deploy"
+          exit 1

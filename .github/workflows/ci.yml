@@ -1,0 +1,58 @@
+# Lint, typecheck e build dos dois pacotes. O projeto não tem testes: se um dia
+# tiver, o `pnpm test` entra aqui.
+
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          # Node 24 porque o pnpm 11 usa node:sqlite, ausente no 20.
+          node-version: '24'
+      - run: corepack enable
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec prisma generate
+      # O script do projeto roda com --fix, que no CI passaria verde depois de
+      # consertar sozinho. Aqui o lint só reporta.
+      - run: pnpm exec eslint src
+      - run: pnpm run build
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - run: corepack enable
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run lint
+      - run: pnpm run build
+
+  # Só o build da imagem: é onde a diferença entre a máquina local e a VPS
+  # aparece (foi assim que o Node 20 quebrou o pnpm install).
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: backend
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
