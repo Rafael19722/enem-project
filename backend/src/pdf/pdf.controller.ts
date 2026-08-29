@@ -12,9 +12,6 @@ export class PdfController {
     private readonly examsService: ExamsService,
   ) {}
 
-  // Rendering a simulado means fetching every image and laying out the whole
-  // document, so this is by far the priciest route. Nobody legitimately asks
-  // for more than a handful in a minute.
   @Throttle({ default: { ttl: 60_000, limit: 5 } })
   @Post('questions')
   async generateQuestionsPdf(
