@@ -139,13 +139,22 @@ rodando só na ingestão.
 
 ## Endpoints do backend
 
-| Método | Rota                       | Descrição                                  |
-| ------ | -------------------------- | ------------------------------------------ |
-| GET    | `/exams/years`             | Anos disponíveis (mais recente primeiro)   |
-| GET    | `/exams/:year/disciplines` | Disciplinas + idiomas do ano               |
-| POST   | `/exams/draw`              | Sorteia as questões de uma ou mais seleções |
-| POST   | `/exams/check`             | Corrige respostas (o gabarito fica no servidor) |
-| POST   | `/pdf/questions`           | Gera o PDF das questões sorteadas          |
+| Método | Rota                       | Descrição                                       | Limite   |
+| ------ | -------------------------- | ----------------------------------------------- | -------- |
+| GET    | `/exams/years`             | Anos disponíveis (mais recente primeiro)        | 60/min   |
+| GET    | `/exams/:year/disciplines` | Disciplinas + idiomas do ano                    | 60/min   |
+| POST   | `/exams/draw`              | Sorteia as questões de uma ou mais seleções     | 20/min   |
+| POST   | `/exams/check`             | Corrige respostas (o gabarito fica no servidor) | 150/min  |
+| POST   | `/pdf/questions`           | Gera o PDF das questões sorteadas               | 5/min    |
+
+O limite é por IP e por rota, contado numa janela deslizante de um minuto
+(`@nestjs/throttler`). Estourar devolve `429` com um header `Retry-After`. Em
+produção quem fala com o backend é o Caddy, então o app roda com `trust proxy`
+pra contar o IP real que ele encaminha — sem isso todo mundo dividiria a mesma
+cota. O `/pdf/questions` é o mais apertado porque cada PDF baixa as imagens de
+todas as questões e monta o documento inteiro. Já o `/exams/check` é folgado de
+propósito: no modo treino o front corrige uma questão por vez, então um simulado
+de 45 questões são 45 chamadas — mais ainda se o aluno trocar de resposta.
 
 ```jsonc
 // POST /exams/draw  →  ExamQuestion[]  (sem as respostas)

@@ -1,4 +1,5 @@
 import { Body, Controller, Post, Res } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import type { Response } from 'express';
 import { ExamsService } from '../exams/exams.service';
 import { GeneratePdfDto } from './dto/generate-pdf.dto';
@@ -11,6 +12,10 @@ export class PdfController {
     private readonly examsService: ExamsService,
   ) {}
 
+  // Rendering a simulado means fetching every image and laying out the whole
+  // document, so this is by far the priciest route. Nobody legitimately asks
+  // for more than a handful in a minute.
+  @Throttle({ default: { ttl: 60_000, limit: 5 } })
   @Post('questions')
   async generateQuestionsPdf(
     @Body() dto: GeneratePdfDto,
