@@ -1,2 +1,10 @@
 allowBuilds:
+  # O Prisma baixa os engines e gera o client em postinstall; sem isto o
+  # `pnpm install` numa máquina nova (VPS, CI) deixa o client sem gerar.
+  '@prisma/client': true
+  '@prisma/engines': true
+  prisma: true
+  esbuild: set this to true or false
+  msgpackr-extract: set this to true or false
   unrs-resolver: false
+  workerd: set this to true or false

@@ -1,0 +1,28 @@
+# Postgres do espelho local da api.enem.dev.
+#
+# Local:  docker compose up -d
+# VPS:    o mesmo arquivo, com POSTGRES_PASSWORD vindo de um .env ao lado.
+#
+# A porta só escuta em 127.0.0.1 de propósito: na VPS o backend fala com o banco
+# pela rede do Docker (ou pelo loopback), e nada disso precisa estar na internet.
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: enem-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-enem}
+      POSTGRES_USER: ${POSTGRES_USER:-enem}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-enem}
+    ports:
+      - '127.0.0.1:${POSTGRES_PORT:-5433}:5432'
+    volumes:
+      - enem-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-enem} -d ${POSTGRES_DB:-enem}']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  enem-pgdata:

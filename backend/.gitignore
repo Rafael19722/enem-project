@@ -14,3 +14,6 @@ npm-debug.log*
 
 # OS / editor
 .DS_Store
+
+# cache cru da api.enem.dev (data/enem/<ano>.json), populado por db:ingest
+/data

@@ -5,7 +5,6 @@ import { AppModule } from './app.module';
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
-  // Comma-separated list of allowed origins (Vercel domain + localhost in dev).
   const corsOrigin = process.env.CORS_ORIGIN ?? 'http://localhost:5173';
   app.enableCors({
     origin: corsOrigin.split(',').map((o) => o.trim()),

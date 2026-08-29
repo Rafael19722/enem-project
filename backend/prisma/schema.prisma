@@ -1,0 +1,84 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Exam {
+  year  Int    @id
+  title String
+
+  disciplines Json
+  languages   Json
+
+  syncedAt DateTime @default(now()) @map("synced_at") @db.Timestamptz(6)
+
+  blocks    DisciplineBlock[]
+  questions Question[]
+
+  @@map("exams")
+}
+
+model DisciplineBlock {
+  year       Int
+  discipline String
+
+  startIndex Int @map("start_index")
+
+  endIndex Int @map("end_index")
+
+  exam Exam @relation(fields: [year], references: [year], onDelete: Cascade)
+
+  @@id([year, discipline])
+  @@map("discipline_blocks")
+}
+
+model Question {
+  id Int @id @default(autoincrement())
+  year Int
+  index Int
+  language String?
+  title String
+  discipline String?
+  blockDiscipline String? @map("block_discipline")
+  context String?
+
+  alternativesIntroduction String? @map("alternatives_introduction")
+  correctAlternative       String? @map("correct_alternative")
+
+  exam         Exam           @relation(fields: [year], references: [year], onDelete: Cascade)
+  alternatives Alternative[]
+  files        QuestionFile[]
+
+  @@unique([year, index, language])
+  @@index([year, blockDiscipline, index], map: "questions_draw_pool")
+  @@index([year, index], map: "questions_by_ref")
+  @@map("questions")
+}
+
+model QuestionFile {
+  questionId Int    @map("question_id")
+  position   Int
+  url        String
+
+  question Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  @@id([questionId, position])
+  @@map("question_files")
+}
+
+model Alternative {
+  questionId Int     @map("question_id")
+  letter     String
+  text       String?
+  file       String?
+  isCorrect  Boolean @default(false) @map("is_correct")
+
+  question Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  @@id([questionId, letter])
+  @@map("alternatives")
+}

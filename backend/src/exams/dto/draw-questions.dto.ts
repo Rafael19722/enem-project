@@ -3,13 +3,21 @@ import {
   ArrayMaxSize,
   ArrayMinSize,
   IsArray,
+  IsIn,
   IsInt,
-  IsString,
   Max,
   Min,
-  MinLength,
   ValidateNested,
 } from 'class-validator';
+
+export const DISCIPLINES = [
+  'linguagens',
+  'ciencias-humanas',
+  'ciencias-natureza',
+  'matematica',
+  'ingles',
+  'espanhol',
+] as const;
 
 export class SelectionDto {
   @Type(() => Number)
@@ -18,12 +26,9 @@ export class SelectionDto {
   @Max(2100)
   year!: number;
 
-  /** Discipline value, e.g. "matematica", "ciencias-humanas", "ingles". */
-  @IsString()
-  @MinLength(1)
-  discipline!: string;
+  @IsIn(DISCIPLINES)
+  discipline!: (typeof DISCIPLINES)[number];
 
-  /** How many questions to randomly pick. Capped at the discipline size. */
   @Type(() => Number)
   @IsInt()
   @Min(1)

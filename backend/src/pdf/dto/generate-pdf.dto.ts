@@ -24,10 +24,6 @@ export class QuestionRefDto {
 }
 
 export class GeneratePdfDto {
-  /**
-   * The drawn questions, by reference. The server re-reads them from its own
-   * cache so the client never has to hold (or be trusted with) the answers.
-   */
   @IsArray()
   @ArrayMinSize(1)
   @ArrayMaxSize(180)
