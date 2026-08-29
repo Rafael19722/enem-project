@@ -1,0 +1,12 @@
+# Um bloco por projeto. O Caddy tira certificado do Let's Encrypt sozinho —
+# só precisa que o DNS do domínio já aponte pro IP da VPS antes de subir.
+
+api.seudominio.com.br {
+	reverse_proxy enem-backend:5000
+}
+
+# Outros projetos entram aqui, apontando pro container name deles:
+#
+# outro.seudominio.com.br {
+# 	reverse_proxy outro-backend:3000
+# }

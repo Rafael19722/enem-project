@@ -1,0 +1,35 @@
+# Proxy compartilhado da VPS — não é deste projeto.
+#
+# Copie a pasta pra /opt/edge na VPS e suba uma vez só:
+#
+#   docker network create edge
+#   docker compose -f /opt/edge/docker-compose.yml up -d
+#
+# Ele é o único container com portas no host. Todo projeto novo entra na rede
+# `edge` e ganha um bloco no Caddyfile — sem brigar por 80/443.
+
+name: edge
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    container_name: caddy
+    restart: unless-stopped
+    ports:
+      - '80:80'
+      - '443:443'
+      - '443:443/udp'
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    networks:
+      - edge
+
+volumes:
+  caddy-data:
+  caddy-config:
+
+networks:
+  edge:
+    external: true
